@@ -1,0 +1,22 @@
+{
+  "name": "ccstatus",
+  "version": "0.1.0",
+  "description": "Context-reflective Claude Code statusline with auth guard, rate limits, git/PR, Alan and Blueprint integration",
+  "type": "module",
+  "bin": {
+    "ccstatus-install": "./install.mjs"
+  },
+  "files": [
+    "statusline.sh",
+    "install.mjs"
+  ],
+  "scripts": {
+    "postinstall": "node install.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jimstamp/ccstatus.git"
+  },
+  "private": true,
+  "license": "UNLICENSED"
+}
