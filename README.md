@@ -49,6 +49,6 @@ External calls are cached in `/tmp/claude-statusline/` to keep the statusline fa
 | Auth status | 5 min |
 | GitHub orgs | 5 min |
 | PR state | 30s |
-| CI health | 60s |
+| CI health | 5 min |
 | Alan manifest | 10s |
 | Blueprint | 30s |

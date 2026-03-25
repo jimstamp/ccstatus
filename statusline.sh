@@ -60,6 +60,10 @@ cache_write() {
     echo "$2" > "$CACHE_DIR/$1"
 }
 
+path_hash() {
+    echo "$1" | md5 -q 2>/dev/null || echo "$1" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "fallback"
+}
+
 # -- Segment collector --------------------------------------------------------
 SEGMENTS=()
 seg() { SEGMENTS+=("$1"); }
@@ -184,7 +188,10 @@ fi
 # =============================================================================
 # GIT / PR / CI
 # =============================================================================
-if [ -n "$git_remote" ] || git -C "$cwd" rev-parse --git-dir &>/dev/null; then
+is_git_repo=false
+git -C "$cwd" rev-parse --git-dir &>/dev/null && is_git_repo=true
+
+if $is_git_repo; then
     branch=$(git -C "$cwd" branch --show-current 2>/dev/null || echo "")
 
     if [ -n "$branch" ]; then
@@ -192,7 +199,7 @@ if [ -n "$git_remote" ] || git -C "$cwd" rev-parse --git-dir &>/dev/null; then
         pr_info=""
 
         # PR state (cached 30s)
-        pr_cache_key="pr-$(echo "$cwd" | md5 -q 2>/dev/null || echo "${cwd}" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "fallback")"
+        pr_cache_key="pr-$(path_hash "$cwd")"
 
         pr_data="{}"
         if cache_read "$pr_cache_key" 30; then
@@ -244,23 +251,20 @@ if [ -n "$git_remote" ] || git -C "$cwd" rev-parse --git-dir &>/dev/null; then
 fi
 
 # =============================================================================
-# DEFAULT BRANCH CI HEALTH (cached 60s)
+# DEFAULT BRANCH CI HEALTH (cached 5 min)
 # =============================================================================
-if git -C "$cwd" rev-parse --git-dir &>/dev/null; then
-    ci_health_cache_key="ci-health-$(echo "$cwd" | md5 -q 2>/dev/null || echo "${cwd}" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "fallback")"
+if $is_git_repo; then
+    ci_health_cache_key="ci-health-$(path_hash "$cwd")"
 
     ci_health=""
-    if cache_read "$ci_health_cache_key" 60; then
+    if cache_read "$ci_health_cache_key" 300; then
         ci_health="$CACHE_RESULT"
     else
-        # Get the most recent workflow run conclusion on the default branch
         default_branch=$(git -C "$cwd" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
         ci_health=$(cd "$cwd" && gh run list --branch "$default_branch" --limit 5 --json conclusion,status \
-            --jq 'if length == 0 then "none"
-                  elif [.[] | select(.status == "in_progress" or .status == "queued")] | length > 0 then "pending"
-                  elif [.[] | select(.conclusion == "failure")] | length > 0 then "fail"
+            --jq 'if [.[] | select(.conclusion == "failure")] | length > 0 then "fail"
                   else "pass"
-                  end' 2>/dev/null || echo "none")
+                  end' 2>/dev/null || echo "pass")
         cache_write "$ci_health_cache_key" "$ci_health"
     fi
 
@@ -274,7 +278,7 @@ fi
 # =============================================================================
 manifest_path="$cwd/.claude/manifest.yaml"
 if [ -f "$manifest_path" ]; then
-    alan_cache_key="alan-$(echo "$cwd" | md5 -q 2>/dev/null || echo "${cwd}" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "fallback")"
+    alan_cache_key="alan-$(path_hash "$cwd")"
 
     alan_data=""
     if cache_read "$alan_cache_key" 10; then
@@ -319,7 +323,7 @@ fi
 # BLUEPRINT ENGAGEMENT (when BLUEPRINT_PATH is set)
 # =============================================================================
 if [ -n "${BLUEPRINT_PATH:-}" ] && [ -d "${BLUEPRINT_PATH}" ]; then
-    bp_cache_key="bp-$(echo "$BLUEPRINT_PATH" | md5 -q 2>/dev/null || echo "${BLUEPRINT_PATH}" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "fallback")"
+    bp_cache_key="bp-$(path_hash "$BLUEPRINT_PATH")"
 
     bp_data=""
     if cache_read "$bp_cache_key" 30; then
