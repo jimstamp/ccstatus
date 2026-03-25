@@ -9,14 +9,15 @@ set -eo pipefail
 # Outputs ANSI-coloured segments to stdout.
 #
 # Layers:
-#   1. Auth guard     — cross-refs account vs git org
-#   2. Location       — MT/folder or folder
-#   3. Model          — display name
-#   4. Rate limits    — 5h/7d usage, reset time when critical
-#   5. Context window — progress bar with colour thresholds
-#   6. Git/PR/CI      — branch, PR state, CI status
-#   7. Alan           — methodology phase + stack (when manifest exists)
-#   8. Blueprint      — engagement context (when BLUEPRINT_PATH set)
+#   Auth guard     — cross-refs account vs git org
+#   Location       — MT/folder or folder
+#   Model          — display name
+#   Rate limits    — 5h/7d usage, reset time when critical
+#   Context window — progress bar with colour thresholds
+#   Git/PR/CI      — branch, PR state, CI status
+#   CI health      — red flag when default branch pipelines failing
+#   Alan           — methodology phase + stack (when manifest exists)
+#   Blueprint      — engagement context (when BLUEPRINT_PATH set)
 # =============================================================================
 
 # -- Colours ------------------------------------------------------------------
@@ -73,7 +74,7 @@ colour_for_pct() {
 }
 
 # =============================================================================
-# 1. AUTH DETECTION (cached 5 min — won't change mid-session)
+# AUTH DETECTION (cached 5 min — won't change mid-session)
 # =============================================================================
 auth_json="{}"
 if cache_read "auth" 300; then
@@ -100,7 +101,7 @@ fi
 echo "$gh_orgs" | grep -q "^madetech$" && is_mt_github=true
 
 # =============================================================================
-# 2. LOCATION + AUTH GUARD
+# LOCATION + AUTH GUARD
 # =============================================================================
 cwd=$(jq_val '.cwd')
 if [ -z "$cwd" ]; then cwd=$(pwd); fi
@@ -121,7 +122,7 @@ else
 fi
 
 # =============================================================================
-# 3. MODEL
+# MODEL
 # =============================================================================
 model=$(jq_val '.model.display_name')
 if [ -n "$model" ]; then
@@ -135,7 +136,7 @@ if [ -n "$model" ]; then
 fi
 
 # =============================================================================
-# 4. RATE LIMITS
+# RATE LIMITS
 # =============================================================================
 rl_5h=$(jq_num '.rate_limits.five_hour.used_percentage')
 rl_7d=$(jq_num '.rate_limits.seven_day.used_percentage')
@@ -164,7 +165,7 @@ if [ "${rl_5h_int:-0}" -gt 0 ] 2>/dev/null; then
 fi
 
 # =============================================================================
-# 5. CONTEXT WINDOW
+# CONTEXT WINDOW
 # =============================================================================
 ctx_pct=$(jq_num '.context_window.used_percentage')
 ctx_int=${ctx_pct%.*}
@@ -181,7 +182,7 @@ if [ "${ctx_int:-0}" -gt 0 ] 2>/dev/null; then
 fi
 
 # =============================================================================
-# 6. GIT / PR / CI
+# GIT / PR / CI
 # =============================================================================
 if [ -n "$git_remote" ] || git -C "$cwd" rev-parse --git-dir &>/dev/null; then
     branch=$(git -C "$cwd" branch --show-current 2>/dev/null || echo "")
@@ -243,7 +244,33 @@ if [ -n "$git_remote" ] || git -C "$cwd" rev-parse --git-dir &>/dev/null; then
 fi
 
 # =============================================================================
-# 7. ALAN METHODOLOGY (when .claude/manifest.yaml exists)
+# DEFAULT BRANCH CI HEALTH (cached 60s)
+# =============================================================================
+if git -C "$cwd" rev-parse --git-dir &>/dev/null; then
+    ci_health_cache_key="ci-health-$(echo "$cwd" | md5 -q 2>/dev/null || echo "${cwd}" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "fallback")"
+
+    ci_health=""
+    if cache_read "$ci_health_cache_key" 60; then
+        ci_health="$CACHE_RESULT"
+    else
+        # Get the most recent workflow run conclusion on the default branch
+        default_branch=$(git -C "$cwd" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+        ci_health=$(cd "$cwd" && gh run list --branch "$default_branch" --limit 5 --json conclusion,status \
+            --jq 'if length == 0 then "none"
+                  elif [.[] | select(.status == "in_progress" or .status == "queued")] | length > 0 then "pending"
+                  elif [.[] | select(.conclusion == "failure")] | length > 0 then "fail"
+                  else "pass"
+                  end' 2>/dev/null || echo "none")
+        cache_write "$ci_health_cache_key" "$ci_health"
+    fi
+
+    if [ "$ci_health" = "fail" ]; then
+        seg "${RED}${BOLD}⚑ CI${RST}"
+    fi
+fi
+
+# =============================================================================
+# ALAN METHODOLOGY (when .claude/manifest.yaml exists)
 # =============================================================================
 manifest_path="$cwd/.claude/manifest.yaml"
 if [ -f "$manifest_path" ]; then
@@ -289,7 +316,7 @@ if [ -f "$manifest_path" ]; then
 fi
 
 # =============================================================================
-# 8. BLUEPRINT ENGAGEMENT (when BLUEPRINT_PATH is set)
+# BLUEPRINT ENGAGEMENT (when BLUEPRINT_PATH is set)
 # =============================================================================
 if [ -n "${BLUEPRINT_PATH:-}" ] && [ -d "${BLUEPRINT_PATH}" ]; then
     bp_cache_key="bp-$(echo "$BLUEPRINT_PATH" | md5 -q 2>/dev/null || echo "${BLUEPRINT_PATH}" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "fallback")"
