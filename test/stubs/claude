@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+if [[ "$1" == "auth" && "$2" == "status" ]]; then
+    echo "${STUB_CLAUDE_AUTH_JSON:-{}}"
+    exit 0
+fi
+exit 0

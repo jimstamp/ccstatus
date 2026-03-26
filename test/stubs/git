@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+case "$*" in
+    *"rev-parse --git-dir"*)
+        if [ "${STUB_GIT_IS_REPO:-false}" = "true" ]; then
+            echo ".git"; exit 0
+        else
+            exit 128
+        fi ;;
+    *"branch --show-current"*)
+        echo "${STUB_GIT_BRANCH:-main}"; exit 0 ;;
+    *"symbolic-ref"*)
+        echo "refs/remotes/origin/${STUB_GIT_DEFAULT_BRANCH:-main}"; exit 0 ;;
+esac
+exit 0

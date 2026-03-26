@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+case "$1 $2" in
+    "api user/orgs")
+        echo "${STUB_GH_ORGS:-}"
+        exit 0 ;;
+    "pr view")
+        echo "${STUB_GH_PR_VIEW:-{}}"
+        exit 0 ;;
+    "run list")
+        echo "${STUB_GH_RUN_LIST:-pass}"
+        exit 0 ;;
+esac
+exit 0

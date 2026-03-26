@@ -33,13 +33,48 @@ CYAN='\033[36m'
 WHITE='\033[37m'
 BG_RED='\033[41m'
 
+# -- Platform helpers --------------------------------------------------------
+_IS_LINUX=false
+[[ "$OSTYPE" == linux* ]] && _IS_LINUX=true
+
+file_mtime() {
+    if $_IS_LINUX; then
+        stat -c %Y "$1" 2>/dev/null || echo 0
+    else
+        stat -f %m "$1" 2>/dev/null || echo 0
+    fi
+}
+
+parse_iso_hhmm() {
+    local ts="${1%%.*}"
+    if $_IS_LINUX; then
+        date -d "$ts" "+%H:%M" 2>/dev/null || echo "$1"
+    else
+        date -j -f "%Y-%m-%dT%H:%M:%S" "$ts" "+%H:%M" 2>/dev/null || echo "$1"
+    fi
+}
+
+# -- Configuration (override via env) ----------------------------------------
+CCSTATUS_COST_WARN="${CCSTATUS_COST_WARN:-1.00}"
+CCSTATUS_COST_CRIT="${CCSTATUS_COST_CRIT:-5.00}"
+
+# Sanitise — these are interpolated into awk programs
+[[ "$CCSTATUS_COST_WARN" =~ ^[0-9]+\.?[0-9]*$ ]] || CCSTATUS_COST_WARN="1.00"
+[[ "$CCSTATUS_COST_CRIT" =~ ^[0-9]+\.?[0-9]*$ ]] || CCSTATUS_COST_CRIT="5.00"
+
+# -- Dependency check --------------------------------------------------------
+if ! command -v jq &>/dev/null; then
+    echo -e "${DIM}statusline: jq not found${RST}"
+    exit 0
+fi
+
 # -- Read JSON from stdin -----------------------------------------------------
 INPUT=$(cat)
 jq_val() { echo "$INPUT" | jq -r "$1 // empty" 2>/dev/null || true; }
 jq_num() { echo "$INPUT" | jq -r "$1 // 0" 2>/dev/null || echo "0"; }
 
 # -- Cache helper -------------------------------------------------------------
-CACHE_DIR="/tmp/claude-statusline"
+CACHE_DIR="${CCSTATUS_CACHE_DIR:-/tmp/claude-statusline}"
 mkdir -p "$CACHE_DIR"
 
 # Read from cache. Sets CACHE_RESULT and returns 0 if fresh, 1 if stale/missing.
@@ -47,7 +82,7 @@ cache_read() {
     local file="$CACHE_DIR/$1" max_age="$2"
     CACHE_RESULT=""
     if [ -f "$file" ]; then
-        local age=$(( $(date +%s) - $(stat -f %m "$file" 2>/dev/null || echo 0) ))
+        local age=$(( $(date +%s) - $(file_mtime "$file") ))
         if [ "$age" -lt "$max_age" ]; then
             CACHE_RESULT=$(cat "$file")
             return 0
@@ -131,41 +166,90 @@ fi
 model=$(jq_val '.model.display_name')
 if [ -n "$model" ]; then
     case "$model" in
-        *Opus*)   model_short="opus" ;;
-        *Sonnet*) model_short="sonnet" ;;
-        *Haiku*)  model_short="haiku" ;;
-        *)        model_short="$model" ;;
+        *Opus*)   model_short="opus";   model_colour="${RED}" ;;
+        *Sonnet*) model_short="sonnet"; model_colour="${BLUE}" ;;
+        *Haiku*)  model_short="haiku";  model_colour="${GREEN}" ;;
+        *)        model_short="$model"; model_colour="${DIM}" ;;
     esac
-    seg "${DIM}${model_short}${RST}"
+    seg "${model_colour}${model_short}${RST}"
 fi
 
 # =============================================================================
-# RATE LIMITS
+# USAGE — rate limits (subscription) or cost (token-based)
 # =============================================================================
-rl_5h=$(jq_num '.rate_limits.five_hour.used_percentage')
-rl_7d=$(jq_num '.rate_limits.seven_day.used_percentage')
-rl_5h_reset=$(jq_val '.rate_limits.five_hour.resets_at')
+has_rate_limits=false
+echo "$INPUT" | jq -e '.rate_limits' &>/dev/null && has_rate_limits=true
 
-rl_5h_int=${rl_5h%.*}
-rl_7d_int=${rl_7d%.*}
+if $has_rate_limits; then
+    # Subscription plan — show rolling rate limit windows
+    read -r rl_5h rl_7d rl_5h_reset < <(echo "$INPUT" | jq -r '[
+        (.rate_limits.five_hour.used_percentage // 0),
+        (.rate_limits.seven_day.used_percentage // 0),
+        (.rate_limits.five_hour.resets_at // "")
+    ] | @tsv' 2>/dev/null || echo "0 0 ")
 
-if [ "${rl_5h_int:-0}" -gt 0 ] 2>/dev/null; then
-    rl_colour=$(colour_for_pct "$rl_5h_int" 50 80)
-    rl_text="${rl_colour}${rl_5h_int}%${RST}${DIM}/5h${RST}"
+    rl_5h_int=${rl_5h%.*}
+    rl_7d_int=${rl_7d%.*}
 
-    # Show 7d when >30%
-    if [ "${rl_7d_int:-0}" -gt 30 ] 2>/dev/null; then
-        rl_7d_colour=$(colour_for_pct "$rl_7d_int" 40 70)
-        rl_text="${rl_text} ${rl_7d_colour}${rl_7d_int}%${RST}${DIM}/7d${RST}"
+    if [ "${rl_5h_int:-0}" -gt 0 ] 2>/dev/null; then
+        rl_colour=$(colour_for_pct "$rl_5h_int" 50 80)
+        rl_text="${rl_colour}${rl_5h_int}%${RST}${DIM}/5h${RST}"
+
+        # Show 7d when >30%
+        if [ "${rl_7d_int:-0}" -gt 30 ] 2>/dev/null; then
+            rl_7d_colour=$(colour_for_pct "$rl_7d_int" 40 70)
+            rl_text="${rl_text} ${rl_7d_colour}${rl_7d_int}%${RST}${DIM}/7d${RST}"
+        fi
+
+        # Show reset time when 5h >80%
+        if [ "${rl_5h_int:-0}" -gt 80 ] 2>/dev/null && [ -n "${rl_5h_reset:-}" ]; then
+            reset_time=$(parse_iso_hhmm "$rl_5h_reset")
+            rl_text="${rl_text} ${DIM}resets ${reset_time}${RST}"
+        fi
+
+        seg "$rl_text"
+    fi
+else
+    # Token-based plan — show session cost with rate
+    read -r cost_usd duration_ms lines_added lines_removed < <(echo "$INPUT" | jq -r '[
+        (.cost.total_cost_usd // 0),
+        (.cost.total_duration_ms // 0),
+        (.cost.total_lines_added // 0),
+        (.cost.total_lines_removed // 0)
+    ] | @tsv' 2>/dev/null || echo "0 0 0 0")
+
+    if [ "$cost_usd" != "0" ]; then
+        # Single awk call: compare thresholds + compute $/min rate
+        read -r cost_level cost_per_min < <(awk "BEGIN{
+            if ($cost_usd >= $CCSTATUS_COST_CRIT) lv=\"red\"
+            else if ($cost_usd >= $CCSTATUS_COST_WARN) lv=\"yellow\"
+            else lv=\"green\"
+            r = ($duration_ms > 0) ? sprintf(\"%.2f\", ($cost_usd / $duration_ms) * 60000) : \"\"
+            printf \"%s\t%s\\n\", lv, r
+        }" 2>/dev/null)
+
+        case "${cost_level:-green}" in
+            red)    cost_colour="$RED" ;;
+            yellow) cost_colour="$YELLOW" ;;
+            *)      cost_colour="$GREEN" ;;
+        esac
+
+        cost_fmt=$(printf '$%.2f' "$cost_usd")
+        cost_text="${cost_colour}${cost_fmt}${RST}"
+
+        if [ -n "${cost_per_min:-}" ]; then
+            cost_text="${cost_text} ${DIM}(\$${cost_per_min}/m)${RST}"
+        fi
+
+        seg "$cost_text"
     fi
 
-    # Show reset time when 5h >80%
-    if [ "${rl_5h_int:-0}" -gt 80 ] 2>/dev/null && [ -n "${rl_5h_reset:-}" ]; then
-        reset_time=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${rl_5h_reset%%.*}" "+%H:%M" 2>/dev/null || echo "${rl_5h_reset}")
-        rl_text="${rl_text} ${DIM}resets ${reset_time}${RST}"
-    fi
+    lines_added_int=${lines_added%.*}
+    lines_removed_int=${lines_removed%.*}
 
-    seg "$rl_text"
+    if [ "${lines_added_int:-0}" -gt 0 ] 2>/dev/null || [ "${lines_removed_int:-0}" -gt 0 ] 2>/dev/null; then
+        seg "${GREEN}+${lines_added_int}${RST} ${RED}-${lines_removed_int}${RST}"
+    fi
 fi
 
 # =============================================================================

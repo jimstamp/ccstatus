@@ -60,11 +60,11 @@ const checks = [
   { cmd: "claude", note: "required — auth status detection" },
 ];
 
+const { execSync } = await import("child_process");
 console.log("\n  Dependency check:");
 for (const { cmd, note } of checks) {
   try {
-    const { execSync } = await import("child_process");
-    execSync(`which ${cmd}`, { stdio: "ignore" });
+    execSync(`command -v ${cmd}`, { stdio: "ignore" });
     console.log(`    ✓ ${cmd} — found`);
   } catch {
     console.log(`    ✗ ${cmd} — not found (${note})`);
